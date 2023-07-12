@@ -1,0 +1,553 @@
+#include "TextLCD_I2C.h"
+#include "mbed.h"
+#include "platform/mbed_thread.h"
+#define SDA PTC9
+#define SCL PTC8
+TextLCD_I2C lcd(SDA, SCL, false);  // set to true if LCD backpack has different pinout
+#define APDSADRESA 0x39
+#define ENABLE 0x80
+#define ATIME 0x81
+#define WTIME 0x83
+#define AGAIN 0x8F
+#define RDATAL 0x96
+#define RDATAH 0x97
+#define BDATAL 0x9A
+#define BDATAH 0x9B
+#define WLONG 0x8D
+I2C apds(PTC2, PTC1);
+PwmOut servo1(PTD0);
+PwmOut servo2(PTD5);
+PwmOut servo3(PTD3);
+PwmOut pogon(PTD2);
+DigitalOut pogon_nula(PTD7);
+DigitalOut trigger(PTB9);
+DigitalOut led(PTC12);
+DigitalIn induktivni(PTE1);
+DigitalIn echo(PTB8);
+DigitalIn start(PTB2);
+InterruptIn stop(PTA13);
+DigitalOut crvenaled(PTC13);
+Timeout p1;
+Timeout t;
+Timeout z;
+Timeout zz;
+Timer tajmer;
+
+char senzor_boje() {
+  led = 1;
+  int i = 0;
+  int crvenal = 0, plaval = 0;
+  char povrat = 0;
+  char gasenje[2] = {ENABLE, 0b00000000};
+  char upali[2] = {ENABLE, 0b00000001};
+  char paljenje1[2] = {ENABLE, 0b00000011};
+  char rawpodaci[4] = {RDATAL, RDATAH, BDATAL, BDATAH};
+  char vrijemeintegracije[2] = {ATIME, 0xFF};
+  char gain[2] = {AGAIN, 0b11000011};
+  char wtimereg[2] = {WTIME, 0xFF};
+  char wlongreg[2] = {WLONG, 0b01100000};
+  while (i++ < 3) {
+    char podaci[4] = {0x00, 0x00, 0x00, 0x00};
+    apds.write((APDSADRESA) << 1, &upali[0], 2, true);
+    ThisThread::sleep_for(10ms);
+    apds.write((APDSADRESA) << 1, &wtimereg[0], 2, true);
+    ThisThread::sleep_for(10ms);
+    apds.write((APDSADRESA) << 1, &paljenje1[0], 2, true);
+    ThisThread::sleep_for(10ms);
+    apds.write((APDSADRESA) << 1, &wlongreg[0], 2, true);
+    ThisThread::sleep_for(10ms);
+    apds.write((APDSADRESA) << 1, &vrijemeintegracije[0], 2, true);
+    ThisThread::sleep_for(10ms);
+    apds.write((APDSADRESA) << 1, &gain[0], 2, true);
+    ThisThread::sleep_for(10ms);
+    apds.write((APDSADRESA) << 1, &rawpodaci[0], 1, true);
+    apds.read((APDSADRESA) << 1, &podaci[0], 1, true);
+    ThisThread::sleep_for(100ms);
+    apds.write((APDSADRESA) << 1, &rawpodaci[1], 1, true);
+    apds.read((APDSADRESA) << 1, &podaci[1], 1, true);
+    ThisThread::sleep_for(100ms);
+    apds.write((APDSADRESA) << 1, &rawpodaci[2], 1, true);
+    apds.read((APDSADRESA) << 1, &podaci[2], 1, true);
+    ThisThread::sleep_for(100ms);
+    apds.write((APDSADRESA) << 1, &rawpodaci[3], 1, true);
+    apds.read((APDSADRESA) << 1, &podaci[3], 1, true);
+    ThisThread::sleep_for(100ms);
+    crvenal = (int)crvenal + podaci[0];
+    plaval = (int)plaval + podaci[2];
+  }
+  if (crvenal > plaval) {
+    povrat = 1;
+  } else if (plaval > crvenal) {
+    povrat = 0;
+  }
+  apds.write((APDSADRESA) << 1, &gasenje[0], 2, true);
+  ThisThread::sleep_for(10ms);
+  led = 0;
+  return povrat;
+}
+
+void tofsalji(int reg, char podaci) {
+  char registar[3];
+  registar[0] = (reg >> 8) & 0xFF;
+  registar[1] = reg & 0xFF;
+  registar[2] = podaci & 0xFF;
+  apds.write(0x29 << 1, &registar[0], 3);
+}
+char tofcitaj(int reg) {
+  char registar[2];
+  char podatak[1];
+  registar[0] = (reg >> 8) & 0xFF;
+  registar[1] = reg & 0xFF;
+  apds.write(0x29 << 1, registar, 2);
+  apds.read(0x29 << 1, podatak, 1);
+  return podatak[0];
+}
+
+float tofsenzor() {
+  int i = 0;
+  int udaljenost1 = 0;
+  while (i++ < 50) {
+    char udaljenost = 0;
+    tofsalji(0x0207, 0x01);
+    tofsalji(0x0208, 0x01);
+    tofsalji(0x0096, 0x00);
+    tofsalji(0x0097, 0xfd);
+    tofsalji(0x00e3, 0x01);
+    tofsalji(0x00e4, 0x03);
+    tofsalji(0x00e5, 0x02);
+    tofsalji(0x00e6, 0x01);
+    tofsalji(0x00e7, 0x03);
+    tofsalji(0x00f5, 0x02);
+    tofsalji(0x00d9, 0x05);
+    tofsalji(0x00db, 0xce);
+    tofsalji(0x00dc, 0x03);
+    tofsalji(0x00dd, 0xf8);
+    tofsalji(0x009f, 0x00);
+    tofsalji(0x00a3, 0x3c);
+    tofsalji(0x00b7, 0x00);
+    tofsalji(0x00bb, 0x3c);
+    tofsalji(0x00b2, 0x09);
+    tofsalji(0x00ca, 0x09);
+    tofsalji(0x0198, 0x01);
+    tofsalji(0x01b0, 0x17);
+    tofsalji(0x01ad, 0x00);
+    tofsalji(0x00ff, 0x05);
+    tofsalji(0x0100, 0x05);
+    tofsalji(0x0199, 0x05);
+    tofsalji(0x01a6, 0x1b);
+    tofsalji(0x01ac, 0x3e);
+    tofsalji(0x01a7, 0x1f);
+    tofsalji(0x0030, 0x00);
+    tofsalji(0x10A, 0x30);
+    tofsalji(0x01c, 0xE);
+    tofsalji(0x18, 0x01);
+    udaljenost = tofcitaj(0x62);
+    udaljenost1 = udaljenost1 + udaljenost;
+  }
+  float sredina = 0;
+  sredina = udaljenost1 / 50.0;
+  return sredina;
+}
+
+bool xyz1 = 0;
+bool xyz3 = 0;
+bool xyz2 = 0;
+bool prolazak = 0;
+bool start1 = 0;
+bool xyz4 = 0;
+bool xyz5 = 0;
+
+void z2() { xyz4 = 0; }
+
+void z1() {
+  xyz4 = 1;
+  xyz5 = 0;
+  zz.attach(&z2, 3s);
+}
+
+void zaustavi() {
+  if (xyz5 == 0) {
+    z.attach(&z1, 500ms);
+    xyz5 = 1;
+    if (crvenaled == 1) {
+      crvenaled = 0;
+      xyz4 = 0;
+    }
+    if (xyz4 == 1 && start1 == 1) {
+      crvenaled = 1;
+    }
+    if (start1 == 1) {
+      xyz2 = 1;
+      prolazak = 0;
+    }
+  }
+}
+
+void t1() { xyz3 = 1; }
+
+void pogon_f(int vrijeme) {
+  if (vrijeme == 2000) {
+    p1.attach(&t1, 2s);
+  } else if (vrijeme == 4000) {
+    p1.attach(&t1, 4s);
+  } else if (vrijeme == 6000) {
+    p1.attach(&t1, 6s);
+  } else if (vrijeme == 500) {
+    p1.attach(&t1, 500ms);
+  }
+  while (xyz3 == 0) {
+    if (crvenaled == 0) {
+      pogon = 1;
+    } else {
+      pogon = 0;
+    }
+  }
+  pogon = 0;
+  xyz3 = 0;
+}
+void t2() { xyz1 = 1; }
+
+void servo(float x, float y, float z) {
+  while (xyz1 == 0 && x > 0) {
+    if (crvenaled == 0) {
+      servo1.pulsewidth(x);
+    } else {
+    }
+  }
+  while (xyz1 == 0 && y > 0) {
+    if (crvenaled == 0) {
+      servo2.pulsewidth(y);
+    } else {
+    }
+  }
+  while (xyz1 == 0 && z > 0) {
+    if (crvenaled == 0) {
+      servo3.pulsewidth(z);
+    } else {
+    }
+  }
+  xyz1 = 0;
+}
+void servo_1() {
+  t.attach(&t2, 100ms);
+  servo(0.0012, 0, 0);
+  t.attach(&t2, 100ms);
+  servo(0.0015, 0, 0);
+  t.attach(&t2, 200ms);
+  servo(0.00163, 0, 0);
+  t.attach(&t2, 300ms);
+  servo(0.0012, 0, 0);
+}
+void servo_2_lijevo() {
+  t.attach(&t2, 300ms);
+  servo(0, 0.0018, 0);
+}
+void servo_2_desno() {
+  t.attach(&t2, 300ms);
+  servo(0, 0.0010, 0);
+}
+void servo_2_sredina() {
+  t.attach(&t2, 300ms);
+  servo(0, 0.0015, 0);
+}
+void servo_3_lijevo() {
+  t.attach(&t2, 300ms);
+  servo(0, 0, 0.0018);
+}
+void servo_3_desno() {
+  t.attach(&t2, 300ms);
+  servo(0, 0, 0.0010);
+}
+void servo_3_sredina() {
+  t.attach(&t2, 300ms);
+  servo(0, 0, 0.0015);
+}
+
+float ult_senz() {
+  int brojac = 0;
+  float zbroj = 0;
+  float udaljenostavg = 0;
+  int64_t vrijeme = 0;
+  while (brojac++ < 10) {
+    float udaljenost = 0;
+    tajmer.reset();
+    trigger = 1;
+    wait_us(10);
+    trigger = 0;
+    while (echo == 0) {
+    };
+    tajmer.start();
+    while (echo == 1) {
+    };
+    tajmer.stop();
+    vrijeme = (tajmer.elapsed_time().count());
+    udaljenost = (vrijeme - 10) / 58.0;
+    zbroj = zbroj + udaljenost;
+    ThisThread::sleep_for(100ms);
+  }
+  udaljenostavg = (zbroj / 10);
+  if (udaljenostavg >= 22.5) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(2, 0);
+    lcd.printf("Spremnik je");
+    lcd.locate(5, 1);
+    lcd.printf("prazan");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 22.5 && udaljenostavg >= 20.7) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 10%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 20.7 && udaljenostavg >= 18.4) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 20%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 18.4 && udaljenostavg >= 16.1) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 30%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 16.1 && udaljenostavg >= 13.8) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 40%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 13.8 && udaljenostavg >= 11.5) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 50%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 11.5 && udaljenostavg >= 9.2) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 60%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 9.2 && udaljenostavg >= 6.9) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 70%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 6.9 && udaljenostavg >= 4.6) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 80%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 4.6 && udaljenostavg >= 2.3) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(1, 0);
+    lcd.printf("Spremnik je 90%%");
+    lcd.locate(4, 1);
+    lcd.printf("popunjen");
+    thread_sleep_for(1000);
+  } else if (udaljenostavg < 2.3) {
+    lcd.locate(0, 0);
+    lcd.printf("                ");
+    lcd.locate(0, 1);
+    lcd.printf("                ");
+    lcd.locate(2, 0);
+    lcd.printf("Spremnik je");
+    lcd.locate(7, 1);
+    lcd.printf("pun");
+    thread_sleep_for(1000);
+  }
+  return udaljenostavg;
+}
+
+int ind_senz() {
+  int metal = 0;
+  induktivni.mode(PullUp);
+  ThisThread::sleep_for(10ms);
+  if (induktivni.read() == 0) {
+    metal = 1;
+  } else if (induktivni.read() == 1) {
+    metal = 0;
+  }
+  return metal;
+}
+int main(void) {
+  servo1.period(0.020);
+  pogon_nula = 0;
+  crvenaled = 0;
+  led = 0;
+  int metal = 0;
+  int proces = 0;
+  stop.fall(&zaustavi);
+  lcd.init();
+  lcd.display(TextLCD_I2C::DISPLAY_ON);
+  lcd.setBacklight(true);
+  start.mode(PullUp);
+  apds.frequency(100000);
+  float visina_valjka = 0;
+  while (1) {
+    thread_sleep_for(1);
+    if (crvenaled == 0 && prolazak == 0) {
+      prolazak = 1;
+      start1 = 0;
+      lcd.locate(0, 0);
+      lcd.printf("                ");
+      lcd.locate(0, 1);
+      lcd.printf("                ");
+      lcd.locate(0, 0);
+      lcd.printf("Pritisni tipku");
+      lcd.locate(0, 1);
+      lcd.printf("za pocetak");
+    } else if (start == 0) {
+      start1 = 1;
+      xyz2 = 0;
+    } else if (start1 == 1 && crvenaled == 0 && xyz2 == 0) {
+      t.attach(&t2, 300ms);
+      servo(0.0012, 0, 0);
+      servo_2_sredina();
+      servo_3_sredina();
+      metal = ind_senz();
+      if (ult_senz() >= 22.5) {
+        start1 = 0;
+        prolazak = 0;
+      } else {
+        servo_1();
+        visina_valjka = 0;
+        visina_valjka = tofsenzor();
+        if (visina_valjka <= 62 && metal == 1 && crvenaled == 0) {
+          lcd.locate(0, 0);
+          lcd.printf("                ");
+          lcd.locate(0, 1);
+          lcd.printf("                ");
+          lcd.locate(0, 0);
+          lcd.printf("Metalni visi valjak\nje na traci          ");
+          thread_sleep_for(1500);
+          for (int pos = 0; pos < 3; pos++) {
+            lcd.display(DisplayBase::SCROLL_LEFT);
+            thread_sleep_for(300);
+          }
+          thread_sleep_for(1500);
+          for (int pos = 0; pos < 3; pos++) {
+            lcd.display(DisplayBase::SCROLL_RIGHT);
+          }
+          lcd.locate(0, 0);
+          lcd.printf("                ");
+          lcd.locate(0, 1);
+          lcd.printf("                ");
+          lcd.locate(0, 0);
+          servo_2_lijevo();
+          pogon_f(4000);
+          servo_3_desno();
+          pogon_f(500);
+          servo_3_lijevo();
+          servo_2_sredina();
+          servo_3_sredina();
+        } else if (visina_valjka >= 63 && visina_valjka <= 68 && metal == 1 && crvenaled == 0) {
+          lcd.locate(0, 0);
+          lcd.printf("                ");
+          lcd.locate(0, 1);
+          lcd.printf("                ");
+          lcd.locate(0, 0);
+          lcd.printf("Metalni nizi valjak\nje na traci            ");
+          thread_sleep_for(1500);
+          for (int pos = 0; pos < 3; pos++) {
+            lcd.display(DisplayBase::SCROLL_LEFT);
+            thread_sleep_for(300);
+          }
+          thread_sleep_for(1500);
+          for (int pos = 0; pos < 3; pos++) {
+            lcd.display(DisplayBase::SCROLL_RIGHT);
+          }
+          servo_2_lijevo();
+          servo_3_lijevo();
+          pogon_f(6000);
+          servo_2_sredina();
+          servo_3_sredina();
+        } else if (visina_valjka <= 60 && metal == 0 && crvenaled == 0) {
+          pogon_f(2000);
+          int boja;
+          boja = senzor_boje();
+          if (boja == 1 && crvenaled == 0) {
+            lcd.locate(0, 0);
+            lcd.printf("                ");
+            lcd.locate(0, 1);
+            lcd.printf("                ");
+            lcd.locate(0, 0);
+            lcd.printf("Crveni valjak");
+            servo_2_desno();
+            pogon_f(500);
+            servo_2_lijevo();
+            servo_2_sredina();
+          } else if (boja == 0 && crvenaled == 0) {
+            lcd.locate(0, 0);
+            lcd.printf("                ");
+            lcd.locate(0, 1);
+            lcd.printf("                ");
+            lcd.locate(0, 0);
+            lcd.printf("Plavi valjak");
+            servo_2_lijevo();
+            pogon_f(500);
+            servo_2_desno();
+            servo_2_sredina();
+          }
+        }
+      }
+    } else if (crvenaled == 1) {
+      lcd.printf("                ");
+      lcd.locate(0, 1);
+      lcd.printf("                ");
+      lcd.locate(0, 0);
+      lcd.printf("Ocisti traku i      \npritisni crvenu tipku");
+      thread_sleep_for(1500);
+      for (int pos = 0; pos < 5; pos++) {
+        lcd.display(DisplayBase::SCROLL_LEFT);
+        thread_sleep_for(300);
+      }
+      thread_sleep_for(1500);
+      for (int pos = 0; pos < 5; pos++) {
+        lcd.display(DisplayBase::SCROLL_RIGHT);
+      }
+      prolazak = 0;
+    }
+  }
+}
